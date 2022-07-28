@@ -1,0 +1,401 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public class Player : MonoBehaviour
+{
+    //ライブラリの追加 using UnityEngine.InputSystem; の追加
+    //変数の作成　今後、使っていく変数をあらかじめ作っておく
+
+    private Xbox playerActionAsset; //プレイヤーの行動に関しての変数を定義
+
+    private InputAction move; // コントローラー設定でつくった「MOVE」をもってくるための変数
+
+    private Rigidbody rb; //リジットボディの変数の定義
+
+    // インスペクターで特定の数値、設定を変更したい場合、[SerializeField] を使う。
+    // publicでもいいのだが、publicの場合だと他のスクリプトでも使われる可能性があるため、ここでは[SerializeField]を使う。privateで。
+
+    [SerializeField] //シリアライズ化　maxspeedに関して
+    private float maxSpeed = 5f; //Ｍａｘスピードをfloatで5とする
+
+    private Vector3 forceDirection = Vector3.zero; //プレイヤーの移動を示すための変数
+
+    [SerializeField]
+    private float graund_gravity = 0.4f; // 地面に引っ張る引力の大きさ
+
+    [SerializeField]  // シリアライズ化　playerCameraに関して
+    private Camera playerCamera; //camera の変数の定義
+
+    private Animator animator; //animator の変数の定義
+
+    private Quaternion targetRotation; //camera の回転に関しての定義
+
+    private bool canMove; // キャラを静止させるための条件の変数
+
+    // Jumpに関しての変数
+
+    [SerializeField]
+    private float maxjumpforce = 5f; // ジャンプするときにかかる推進力
+
+    [SerializeField]
+    private float gravity = 8f; // 重力の値、ジャンプ中に使う。
+
+    private bool jumpNow; // ジャンプ中か、そうでないか。
+
+    private bool fall; // 地面に接地しているかどうか
+
+    private float timer = 0f; // 空中に飛んでいる時間を格納する。
+
+    private Vector3 normalVector = Vector3.zero; // 法線ベクトルの設定
+
+    [SerializeField]
+    private float distance = 1.0f; // レイの長さ
+
+
+    // startメソッドよりも初期動作が早いawakeを使って、変数に値を代入する
+
+    private void Awake()
+    {
+        rb = GetComponent<Rigidbody>(); //リジットボディの値をとってくる
+        animator = GetComponent<Animator>(); //animatorをとってくる
+
+        playerActionAsset = new Xbox(); //Xboxコントローラーの初期化
+
+        canMove = true; // 動けるようにする。
+        targetRotation = transform.rotation; //現在のカメラの回転をもってくる
+
+        jumpNow = false; // スタート開始時に飛んでいることはないので、最初は飛んでいない
+
+        fall = false; // スタート時、地面にいる判定にする。
+        
+        animator.SetBool("Jump_push", false); // ジャンプボタンが押せるようにする。
+
+    }
+
+    // 物体が接続し続けている限り、法線を取得する関数
+
+    private void OnCollisionStay(Collision collision)
+    {
+        normalVector = collision.contacts[0].normal;
+    }
+
+
+    // 物体が離れたとき、法線の取得をやめ、fallを起動させる。
+    private void OnCollisionExit(Collision collision)
+    {
+        animator.SetBool("ground", false);
+        normalVector = Vector3.zero;
+        fall = true;
+    }
+
+    //ボタン入力と関数を結びつける
+
+    //OnEnable というオブジェクトが有効になったときに呼び出されるものを使って設定。ついでに、awake < OnEnable < start の順番で起動していく
+    //ボタンで攻撃！！とか、アナログスティックで移動！！などの設定をするときにここでやる。
+
+    private void OnEnable()
+    { 
+
+        //変数にMoveアクションを格納 moveにコントローラー設定で作った「MOVE」を入れる。
+        move = playerActionAsset.Player.MOVE;
+
+        // Jumpボタンを押したら、Jumpが始まる。
+        // Jumpボタンと連動して、アニメーターが動くようにする。アニメーターはJUMPに。
+        // Jumpボタンを押したとき、１回だけしか押せないようにする。なので、falseの時のみ押せるようにする。
+
+        if(animator.GetBool("Jump_push") == false)
+        {
+            playerActionAsset.Player.Jump.started += JUMP;
+        }
+
+        playerActionAsset.Player.Enable();　//OnEnableの有効化
+    }
+
+    //OnDisable というオブジェクトが無効になっているときに呼び出されるものを使って設定。
+    private void OnDisable()
+    {
+        playerActionAsset.Player.Jump.started -= JUMP;
+
+        playerActionAsset.Player.Disable(); //OnDisableの有効化
+    }
+
+
+    // ジャンプスタートとともに飛ばず、アニメーションイベントが起動してから飛ぶようにする。
+    // そのアニメーションイベントの関数を書く。
+    // animationのジャンプのタイミングはだいたい開始してから12フレームくらい。
+
+    private void JumpUpStart()
+    {
+        jumpNow = true;
+        animator.SetBool("ground", false);
+    }
+
+    // LandingUp関数の設定。ここでは速度停止、StartingUp関数まで止まっているようにする。
+
+    private void LandingUp()
+    {
+        Change();
+    }
+
+    // StartingUp関数の設定。ここで、Jump_pushのトリガーを外す。移動停止解除。
+
+    private void StartingUp()
+    {
+        animator.SetBool("Jump_push", false);
+        Change();
+    }
+
+
+    // まず、Updateでキャラのモーションとスピードを関連付けていく。
+    void Update()
+    {
+        // animator のspeedパラメーターに速さの比を使って求める。
+        // ここではrb.velocityを使う。
+
+        animator.SetFloat("speed", rb.velocity.sqrMagnitude / (maxSpeed * maxSpeed));
+
+        // 初音ミクからレイを放つ。地面と接しているときの判定をする。
+        // 接地判定と自由落下をここに記載。 
+
+        Transform transform = this.transform;
+
+        Ray ray = new Ray(transform.position, Vector3.down);
+        Debug.DrawRay(transform.position, Vector3.down * distance, Color.red);
+
+        if (Physics.Raycast(ray, out RaycastHit hit, distance)) // レイが当たった時の処理
+        {
+            if (hit.collider.CompareTag("GroundArea")) // レイが地面に触れたら、
+            {
+                // ジャンプボタンを切って、animatorでも着地モーションに遷移させる。
+                jumpNow = false;
+
+                fall = false; //地上にいるよーって伝える。
+                
+                // アニメーターで使用した値をすべて元に戻す。
+
+                animator.SetBool("ground", true);
+                animator.SetFloat("Falling_time", 0);
+                animator.SetFloat("jumpforce", 0);
+
+                // 空中時間を０に戻す。
+
+                timer = 0f;
+
+            }
+        }
+    }
+
+
+    // ここではFixedUpdateを使って、キャラを動かす部分のコントロールをする。
+    // Updateとの違いは、フレームの時間を過越ことができるのがFixedUpdate。
+    // もう少し簡単に言うと、物理演算が必要ならここで行う。
+
+    private void FixedUpdate()
+    {
+        // 移動してもいいのかの判定。canMoveがどうなっているかで変わる。
+
+        if (canMove)
+        {
+            // 速さに関して判断するための関数を設置。
+
+            SpeedForceCheck();
+
+            // forceDirection　の変数に、moveでのコントローラー入力の値を持ってくる。
+            // そして、現在のカメラの位置から値をとってくれるようにGetCameraRightという変数を作って、それをかけ合わせる。
+            // 最初はX軸の値
+            forceDirection += move.ReadValue<Vector2>().x * GetCameraRight(playerCamera);
+
+            // 次はｙ軸の値 真正面のところからの値を持ってくる
+            forceDirection += move.ReadValue<Vector2>().y * GetCameraForward(playerCamera);
+
+            // ジャンプ関数を加える。
+
+            Jumpping();
+
+            //フォール関数の導入。
+
+            Falling();
+
+            // 地面に平行移動できるようにベクトルを変更する。
+
+            if ((jumpNow == false) && (fall == false))
+            {
+                forceDirection = Vector3.ProjectOnPlane(forceDirection, normalVector);
+            }
+
+            //リジットボディに力を加える関数
+            rb.AddForce(forceDirection, ForceMode.Impulse);
+
+
+            //無限に速度が足されてしまうので、一回一回０にする
+            forceDirection = Vector3.zero;
+
+            // キャラが進行方向に向いて走ってくれるように、LookAtという関数を作る
+
+            LookAt();
+
+
+        }
+        else
+        {
+            //　移動ができないようにする。
+            
+            rb.velocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+    }
+
+    //GetCameraRight の関数を定義する。ただし、今回はVector3型で変数を定義する。これは、カメラがVector3型で変数を作っているから。
+    private Vector3 GetCameraRight(Camera playerCamera)
+    {
+
+        // カメラのx軸の値をとってきたい
+        Vector3 right = playerCamera.transform.right;
+
+
+        // right のy軸は０とする
+        right.y = 0;
+
+        // ベクトルの正規化（大きさ１のベクトルにするイメージ）をして、もとのところに返してあげる。
+        return right.normalized;
+
+    }
+
+    // GetCameraForward　の関数を定義する
+    private Vector3 GetCameraForward(Camera playerCamera)
+    {
+
+        // カメラのx軸の値をとってきたい
+        Vector3 forward = playerCamera.transform.forward;
+
+
+        // right のy軸は０とする
+        forward.y = 0;
+
+        // ベクトルの正規化（大きさ１のベクトルにするイメージ）をして、もとのところに返してあげる。
+        return forward.normalized;
+
+    }
+
+    // SpeedForceCheckの関数の中身
+
+    private void SpeedForceCheck()
+    {
+        // プレーヤーの今現在の速さに関して、playerVelocityとして値をとってくる。現在の速さは「rb.velocity」。これは速さ。
+
+        Vector3 playerVelocity = rb.velocity;
+
+        // ベクトルの２乗を用いて、大きさを求めて、それを速さの値と比較する。
+        // まずは、maxJumpForceを超えていった場合。maxJumpForceを越えないようにする。やり方はベクトルの正規化（大きさ１の方向のベクトル）に、maxJumpforceをかける。
+
+        if (playerVelocity.y > maxjumpforce)
+        {
+            rb.velocity = playerVelocity.normalized * maxjumpforce;
+        }
+
+        // 次はMaxスピード。
+
+        if (playerVelocity.sqrMagnitude > maxSpeed * maxSpeed)
+        {
+            rb.velocity = playerVelocity.normalized * maxSpeed;
+        }
+
+    }
+
+    // LookAtの関数の中身
+    private void LookAt()
+    {
+        //　キャラの向きを決めるdirectionをつくる。それを現在の速度ベクトルrb.velocityとする。
+        
+        Vector3 direction = rb.velocity;
+
+        // 今回は向きがメインなので、y軸は使わないので０にする。
+        direction.y = 0;
+
+        // 動いているときのベクトルが0.0001より大きい、または速度ベクトルが0.0001より大きいときに向きを変える。
+
+        if (move.ReadValue<Vector2>().sqrMagnitude > 0.0001f && direction.sqrMagnitude > 0.0001f)
+        {
+            targetRotation = Quaternion.LookRotation(direction);
+            rb.rotation = Quaternion.RotateTowards(rb.rotation, targetRotation, 900 * Time.deltaTime);
+        }
+        else
+        {
+            rb.angularVelocity = Vector3.zero;
+        }
+    }
+
+    public void Change()
+    {
+        canMove = !canMove;
+    }
+
+
+    // JUMP関数でアニメーターが始まるようにする。
+
+    private void JUMP(InputAction.CallbackContext obj)
+    {
+        animator.SetBool("Jump_push", true);
+    }
+
+    // ジャンプの関数
+    private void Jumpping()
+    {
+        if (jumpNow == true)
+        {
+            // y軸方向の速度ベクトルを初期化する
+            forceDirection.y = 0;
+
+            // タイマーを動かす。
+            timer += Time.deltaTime;
+
+            // 鉛直上げ投げの速度計算をここに記載。 v = v0 - gt ですな。
+            // また、timerをTime.deltaにしたので、時間で大きくなっていく。
+            // 傾きg、y切片v0の一次関数
+            // ということで、加え続けるようにする。
+
+            forceDirection.y = maxjumpforce; // 初速を入れ込む。 
+
+            forceDirection.y -= (gravity * timer); // forceDirection.y = forceDirection.y - (gravity * timer) だったね。
+
+
+            // 速度ベクトルの大きさの正負を見て、アニメーターを変化させる。
+            // 速度ベクトルが負になる　→　落下することを意味するので、そこでアニメーターを変化させる。
+
+            animator.SetFloat("jumpforce", forceDirection.y);
+
+        }
+
+        // ジャンプしていない時は地面に沿って力を働かせて、浮かせないようにする。
+
+        else if((jumpNow == false) && (fall == false))
+        {
+            rb.AddForce(- normalVector.normalized * graund_gravity, ForceMode.Impulse);
+        }
+    }
+
+    // ジャンプせずに自由落下するときのコードの記入。
+    private void Falling()
+    {
+        if ((fall == true) && (jumpNow == false))
+        {
+            
+            // 自由落下の式を入れる
+            // y軸方向の速度ベクトルを初期化する
+            forceDirection.y = 0;
+
+            // タイマーを動かす
+            timer += Time.deltaTime;
+
+            // 自由落下の速度計算をここに記載。 v = - gt ですな。 
+
+            forceDirection.y -= gravity * timer;
+
+            // 落下の時間でモーションが推移するように設定
+            animator.SetFloat("Falling_time", timer);
+        }
+    }
+}
